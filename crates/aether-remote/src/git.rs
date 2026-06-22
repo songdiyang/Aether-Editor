@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use git2::{Repository, BranchType, DiffOptions, Oid, ObjectType, Signature, Time};
+use git2::{Repository, Signature, Time};
 
 use crate::remote_fs::Result;
 use crate::ssh::SshConfig;
@@ -175,9 +175,9 @@ impl GitRepository {
             }
 
             if flags.is_wt_new() {
-                status.untracked_files.push(path);
+                status.untracked_files.push(path.clone());
             } else if flags.is_wt_modified() || flags.is_wt_deleted() {
-                status.unstaged_files.push(path);
+                status.unstaged_files.push(path.clone());
             }
 
             if flags.is_conflicted() {
@@ -191,7 +191,9 @@ impl GitRepository {
                 if let Ok(local_ref) = self.repo.resolve_reference_from_short_name(local_branch_name) {
                     if let Some(target_oid) = local_ref.target() {
                         if let Ok(upstream) = self.repo.branch_upstream_name(local_branch_name) {
-                            if let Ok(remote_ref) = self.repo.find_reference(&upstream) {
+                            let upstream_str = std::str::from_utf8(&upstream)
+                                .map_err(|e| GitError::StatusFailed(format!("无法解析分支名: {}", e)))?;
+                            if let Ok(remote_ref) = self.repo.find_reference(upstream_str) {
                                 if let Some(remote_oid) = remote_ref.target() {
                                     if let Ok((ahead, behind)) = 
                                         self.repo.graph_ahead_behind(target_oid, remote_oid) {
@@ -211,7 +213,8 @@ impl GitRepository {
     /// 拉取远程更改
     pub fn pull(&self, remote_name: Option<&str>, branch_name: Option<&str>) -> Result<()> {
         let remote = remote_name.unwrap_or("origin");
-        let branch = branch_name.unwrap_or(&self.current_branch()?);
+        let binding = self.current_branch()?;
+        let branch = branch_name.unwrap_or(&binding);
 
         let mut remote_obj = self.repo.find_remote(remote)
             .map_err(|e| GitError::PullFailed(format!("未找到远程: {}", e)))?;
@@ -228,7 +231,7 @@ impl GitRepository {
         let head = self.repo.head()
             .map_err(|e| GitError::PullFailed(e.to_string()))?;
 
-        let head_commit = self.repo.reference_to_annotated_commit(&head)
+        let _head_commit = self.repo.reference_to_annotated_commit(&head)
             .map_err(|e| GitError::PullFailed(e.to_string()))?;
 
         let analysis = self.repo.merge_analysis(&[&fetch_commit])
@@ -239,7 +242,13 @@ impl GitRepository {
         }
 
         if analysis.0.is_fast_forward() {
-            self.repo.checkout_tree(&fetch_commit.as_commit().unwrap().peel_to_tree()?, None)
+            let fetch_commit_obj = self.repo.find_commit(fetch_commit.id())
+                .map_err(|e| GitError::CheckoutFailed(e.to_string()))?;
+            let tree = fetch_commit_obj.tree()
+                .map_err(|e| GitError::CheckoutFailed(e.to_string()))?;
+            
+            let tree_obj = tree.as_object();
+            self.repo.checkout_tree(tree_obj, None)
                 .map_err(|e| GitError::CheckoutFailed(e.to_string()))?;
 
             self.repo.head().unwrap()
@@ -256,7 +265,10 @@ impl GitRepository {
             // 需要提交合并结果
             let signature = self.create_signature()?;
             let head_commit_obj = self.repo.head().unwrap().peel_to_commit().unwrap();
-            let mut index = self.repo.merge_commits(None, &head_commit_obj, &fetch_commit.peel_to_commit().unwrap(), None)
+            let fetch_commit_obj = self.repo.find_commit(fetch_commit.id())
+                .map_err(|e| GitError::MergeFailed(e.to_string()))?;
+            
+            let mut index = self.repo.merge_commits(&head_commit_obj, &fetch_commit_obj, None)
                 .map_err(|e| GitError::MergeFailed(e.to_string()))?;
 
             if index.has_conflicts() {
@@ -275,7 +287,7 @@ impl GitRepository {
                 &signature,
                 &format!("Merge branch '{}' of {}", branch, remote),
                 &tree,
-                &[&head_commit_obj, &fetch_commit.peel_to_commit().unwrap()],
+                &[&head_commit_obj, &fetch_commit_obj],
             ).map_err(|e| GitError::CommitFailed(e.to_string()))?;
 
             self.repo.cleanup_state()
@@ -288,7 +300,8 @@ impl GitRepository {
     /// 推送本地更改
     pub fn push(&self, remote_name: Option<&str>, branch_name: Option<&str>, force: bool) -> Result<()> {
         let remote = remote_name.unwrap_or("origin");
-        let branch = branch_name.unwrap_or(&self.current_branch()?);
+        let binding = self.current_branch()?;
+        let branch = branch_name.unwrap_or(&binding);
 
         let mut remote_obj = self.repo.find_remote(remote)
             .map_err(|e| GitError::PushFailed(format!("未找到远程: {}", e)))?;

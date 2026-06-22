@@ -64,7 +64,8 @@ pub trait RemoteFs: Send + Sync {
         let (stdout, _) = self.exec(&format!("cd {} && git remote -v", path))?;
         let mut remote_url = String::new();
         for line in stdout.lines() {
-            if line.contains("origin") && line.contains("(fetch)") {\                let parts: Vec<&str> = line.split_whitespace().collect();
+            if line.contains("origin") && line.contains("(fetch)") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 2 {
                     remote_url = parts[1].to_string();
                 }
@@ -125,7 +126,7 @@ impl GitSshRepo {
     pub fn from_url(url: &str, repo_path: PathBuf) -> Result<Self> {
         // 支持 git@host:repo.git 格式
         if let Some(rest) = url.strip_prefix("git@") {
-            if let Some((host, repo)) = rest.split_once(':') {
+            if let Some((host, _repo)) = rest.split_once(':') {
                 let host_parts: Vec<&str> = host.split(':').collect();
                 let ssh_host = host_parts[0].to_string();
                 let ssh_port = 22; // 默认端口

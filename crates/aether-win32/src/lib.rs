@@ -16,3 +16,4 @@ pub mod uia;
 pub mod ime;
 pub mod terminal;
 pub mod theme;
+pub mod settings;

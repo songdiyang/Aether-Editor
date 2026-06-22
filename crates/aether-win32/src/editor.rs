@@ -23,6 +23,8 @@ use crate::tabs::{Tab, TabLayout};
 use crate::command_palette::CommandPalette;
 use crate::git::GitIntegration;
 use crate::terminal::TerminalPanel;
+use aether_shared::settings::AppSettings;
+use crate::settings::SettingsPanel;
 
 /// 编辑器应用状态
 pub struct EditorState {
@@ -289,6 +291,7 @@ impl EditorState {
         let theme = Theme::glass();
         let buffer = PieceTable::from_string(String::new());
         let key_map = KeyMap::new();
+        let app_settings = AppSettings::load();
 
         let mut state = Self {
             hwnd,
@@ -341,6 +344,8 @@ impl EditorState {
             multi_cursor: MultiCursorState::new(),
             git: GitIntegration::new(),
             terminal_panel: TerminalPanel::new(),
+            settings_panel: SettingsPanel::from_settings(&app_settings),
+            app_settings,
             brush_cache: BrushCache::new(),
             text_format_cache: TextFormatCache::new().unwrap_or_else(|_| TextFormatCache::new().unwrap()),
             is_maximized: false,

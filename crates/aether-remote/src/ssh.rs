@@ -1,8 +1,11 @@
 use std::sync::mpsc;
 use std::path::Path;
+use std::net::TcpStream;
+use std::io::Read;
+use std::io::Write;
 
 use crate::remote_fs::{RemoteFs, RemoteDirEntry, FsEvent, Result};
-use openssh::{Session, SessionBuilder, KnownHosts, Stdio};
+use ssh2::Session as SshSession;
 
 /// SSH 认证方式
 #[derive(Clone, Debug)]
@@ -35,7 +38,7 @@ impl Default for SshConfig {
 /// SSH 远程文件系统实现
 pub struct SshRemoteFs {
     config: SshConfig,
-    session: Option<Session>,
+    session: Option<SshSession>,
 }
 
 impl SshRemoteFs {
@@ -49,35 +52,46 @@ impl SshRemoteFs {
 
     /// 建立 SSH 连接
     pub fn connect(&mut self) -> Result<()> {
-        let mut builder = SessionBuilder::default();
+        let tcp = TcpStream::connect(format!("{}:{}", self.config.host, self.config.port))
+            .map_err(|e| format!("TCP 连接失败: {}", e))?;
         
-        // 配置主机和端口
-        builder.known_hosts_check(KnownHosts::Add);
+        let mut sess = SshSession::new()
+            .map_err(|e| format!("SSH 会话创建失败: {}", e))?;
+        
+        sess.set_tcp_stream(tcp);
+        sess.handshake()
+            .map_err(|e| format!("SSH 握手失败: {}", e))?;
         
         // 根据认证方式配置
         match &self.config.auth {
             SshAuth::Password(password) => {
-                builder.password_auth(password.clone());
+                sess.userauth_password(&self.config.username, password)
+                    .map_err(|e| format!("密码认证失败: {}", e))?;
             }
             SshAuth::Key { path, passphrase } => {
                 let key_path = Path::new(path);
                 if key_path.exists() {
                     match passphrase {
-                        Some(pass) => builder.key_pair(key_path, pass),
-                        None => builder.key_pair(key_path, ""),
+                        Some(pass) => {
+                            sess.userauth_pubkey_file(&self.config.username, None, key_path, Some(pass))
+                                .map_err(|e| format!("密钥认证失败: {}", e))?;
+                        }
+                        None => {
+                            sess.userauth_pubkey_file(&self.config.username, None, key_path, None)
+                                .map_err(|e| format!("密钥认证失败: {}", e))?;
+                        }
                     }
+                } else {
+                    return Err(format!("密钥文件不存在: {}", path));
                 }
             }
             SshAuth::Agent => {
-                // 使用 SSH agent
+                sess.userauth_agent(&self.config.username)
+                    .map_err(|e| format!("Agent 认证失败: {}", e))?;
             }
         }
-
-        let addr = format!("{}:{}", self.config.host, self.config.port);
-        let session = builder.connect(&addr, &self.config.username)
-            .map_err(|e| format!("SSH 连接失败: {}", e))?;
         
-        self.session = Some(session);
+        self.session = Some(sess);
         Ok(())
     }
 
@@ -90,51 +104,77 @@ impl SshRemoteFs {
     pub fn disconnect(&mut self) {
         self.session = None;
     }
+
+    /// 执行远程命令并返回输出
+    fn exec_command(&self, command: &str) -> Result<(String, String)> {
+        let sess = self.session.as_ref()
+            .ok_or("SSH 未连接，请先调用 connect()")?;
+        
+        let mut channel = sess.channel_session()
+            .map_err(|e| format!("创建通道失败: {}", e))?;
+        
+        channel.exec(command)
+            .map_err(|e| format!("执行命令失败: {}", e))?;
+        
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        channel.read_to_string(&mut stdout)
+            .map_err(|e| format!("读取输出失败: {}", e))?;
+        
+        channel.stderr().read_to_string(&mut stderr)
+            .map_err(|e| format!("读取错误输出失败: {}", e))?;
+        
+        channel.wait_close()
+            .map_err(|e| format!("等待命令完成失败: {}", e))?;
+        
+        Ok((stdout, stderr))
+    }
 }
 
 impl RemoteFs for SshRemoteFs {
     /// 读取远程文件内容
     fn read_file(&self, path: &str) -> Result<Vec<u8>> {
-        let session = self.session.as_ref()
+        let sess = self.session.as_ref()
             .ok_or("SSH 未连接，请先调用 connect()")?;
         
-        let output = session.command(&format!("cat {}", path))
-            .stdout(Stdio::capture())
-            .stderr(Stdio::capture())
-            .output()
+        let (mut channel, _stat) = sess.scp_recv(Path::new(path))
+            .map_err(|e| format!("打开 SCP 通道失败: {}", e))?;
+        
+        let mut content = Vec::new();
+        channel.read_to_end(&mut content)
             .map_err(|e| format!("读取文件失败: {}", e))?;
-
-        Ok(output.stdout)
+        
+        Ok(content)
     }
 
     /// 写入文件到远程
     fn write_file(&self, path: &str, content: &[u8]) -> Result<()> {
-        let session = self.session.as_ref()
+        let sess = self.session.as_ref()
             .ok_or("SSH 未连接，请先调用 connect()")?;
-
-        // 使用 base64 编码文件内容来安全传输
-        let encoded = base64::encode(content);
-        let cmd = format!("echo {} | base64 -d > {}", encoded, path);
         
-        session.command(&cmd)
-            .output()
+        let mut channel = sess.scp_send(Path::new(path), 0o644, content.len() as u64, None)
+            .map_err(|e| format!("打开 SCP 发送通道失败: {}", e))?;
+        
+        channel.write_all(content)
             .map_err(|e| format!("写入文件失败: {}", e))?;
-
+        
+        channel.send_eof()
+            .map_err(|e| format!("发送 EOF 失败: {}", e))?;
+        
+        channel.wait_eof()
+            .map_err(|e| format!("等待 EOF 失败: {}", e))?;
+        
+        channel.wait_close()
+            .map_err(|e| format!("等待关闭失败: {}", e))?;
+        
         Ok(())
     }
 
     /// 列出远程目录内容
     fn list_dir(&self, path: &str) -> Result<Vec<RemoteDirEntry>> {
-        let session = self.session.as_ref()
-            .ok_or("SSH 未连接，请先调用 connect()")?;
-
-        let output = session.command(&format!("ls -la {}", path))
-            .stdout(Stdio::capture())
-            .stderr(Stdio::capture())
-            .output()
-            .map_err(|e| format!("列出目录失败: {}", e))?;
-
-        let entries: Vec<RemoteDirEntry> = String::from_utf8_lossy(&output.stdout)
+        let (stdout, _) = self.exec_command(&format!("ls -la {}", path))?;
+        
+        let entries: Vec<RemoteDirEntry> = stdout
             .lines()
             .skip(1) // 跳过第一行 "total ..."
             .filter_map(|line| parse_ls_line(line))
@@ -151,19 +191,7 @@ impl RemoteFs for SshRemoteFs {
 
     /// 在远程执行命令
     fn exec(&self, command: &str) -> Result<(String, String)> {
-        let session = self.session.as_ref()
-            .ok_or("SSH 未连接，请先调用 connect()")?;
-        
-        let output = session.command(command)
-            .stdout(Stdio::capture())
-            .stderr(Stdio::capture())
-            .output()
-            .map_err(|e| format!("SSH 命令执行失败: {}", e))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        Ok((stdout, stderr))
+        self.exec_command(command)
     }
 }
 
