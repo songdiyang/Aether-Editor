@@ -15,3 +15,4 @@ pub mod git;
 pub mod uia;
 pub mod ime;
 pub mod terminal;
+pub mod settings;

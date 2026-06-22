@@ -1,0 +1,10 @@
+[package]
+name = "aether-ai"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ureq = { version = "2.9", features = ["json"] }
+aether-shared = { path = "../aether-shared" }

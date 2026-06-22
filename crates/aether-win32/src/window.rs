@@ -227,7 +227,53 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         // 3. 检测侧边栏点击
                         let sidebar_region = layout.sidebar_region();
                         if sidebar_region.contains(mouse_x, mouse_y) {
-                            if st.handle_sidebar_click(mouse_x - sidebar_region.x, mouse_y - sidebar_region.y) {
+                            let sidebar_rel_x = mouse_x - sidebar_region.x;
+                            let sidebar_rel_y = mouse_y - sidebar_region.y;
+                            
+                            if st.sidebar_content == crate::layout::SidebarContent::SettingsPanel {
+                                let mut handled = false;
+                                if let Some(field) = st.settings_panel.hit_test_field(sidebar_rel_x, sidebar_rel_y) {
+                                    st.settings_panel.active_field = Some(field);
+                                    handled = true;
+                                } else if let Some(button) = st.settings_panel.hit_test_button(sidebar_rel_x, sidebar_rel_y) {
+                                    match button {
+                                        crate::settings::SettingsButton::Save => {
+                                            let ai_settings = st.settings_panel.to_ai_settings();
+                                            st.app_settings.ai = ai_settings;
+                                            let _ = st.app_settings.save();
+                                            st.settings_panel.test_status = "设置已保存".to_string();
+                                            st.settings_panel.is_testing = false;
+                                            handled = true;
+                                        }
+                                        crate::settings::SettingsButton::TestConnection => {
+                                            st.settings_panel.is_testing = true;
+                                            st.settings_panel.test_status = "测试中...".to_string();
+                                            let ai_settings = st.settings_panel.to_ai_settings();
+                                            drop(st);
+                                            let result = aether_ai::AiClient::new(&ai_settings).test_connection();
+                                            let mut st = state.borrow_mut();
+                                            st.settings_panel.is_testing = false;
+                                            match result {
+                                                Ok(resp) => {
+                                                    let preview = resp.chars().take(60).collect::<String>();
+                                                    st.settings_panel.test_status = format!("成功: {}", preview);
+                                                }
+                                                Err(e) => {
+                                                    st.settings_panel.test_status = format!("失败: {}", e);
+                                                }
+                                            }
+                                            drop(st);
+                                            state.borrow_mut().render();
+                                            return;
+                                        }
+                                    }
+                                }
+                                if handled {
+                                    drop(st);
+                                    state.borrow_mut().render();
+                                    return;
+                                }
+                            } else if st.handle_sidebar_click(sidebar_rel_x, sidebar_rel_y) {
                                 drop(st);
                                 state.borrow_mut().render();
                                 return;
@@ -371,13 +417,30 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         let sidebar_region = layout.sidebar_region();
                         let _old_tree_hover = st.hover_file_node;
                         let tree_hover_changed = if sidebar_region.contains(mouse_x, mouse_y) {
-                            st.update_file_tree_hover(mouse_x - sidebar_region.x, mouse_y - sidebar_region.y)
+                            if st.sidebar_content == crate::layout::SidebarContent::SettingsPanel {
+                                false
+                            } else {
+                                st.update_file_tree_hover(mouse_x - sidebar_region.x, mouse_y - sidebar_region.y)
+                            }
                         } else {
                             let old = st.hover_file_node.take();
                             old.is_some()
                         };
 
-                        if old_menu_hover != new_menu_hover || old_hover != new_hover || old_titlebar_hover != new_titlebar_hover || tree_hover_changed {
+                        // Update settings panel button hover
+                        let settings_hover_changed = if sidebar_region.contains(mouse_x, mouse_y)
+                            && st.sidebar_content == crate::layout::SidebarContent::SettingsPanel
+                        {
+                            let old_hover = st.settings_panel.hover_button.clone();
+                            let rel_x = mouse_x - sidebar_region.x;
+                            let rel_y = mouse_y - sidebar_region.y;
+                            st.settings_panel.hover_button = st.settings_panel.hit_test_button(rel_x, rel_y);
+                            old_hover != st.settings_panel.hover_button
+                        } else {
+                            false
+                        };
+
+                        if old_menu_hover != new_menu_hover || old_hover != new_hover || old_titlebar_hover != new_titlebar_hover || tree_hover_changed || settings_hover_changed {
                             drop(st);
                             state.borrow_mut().render();
                         } else if is_dragging {
@@ -512,6 +575,20 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 let ch = (wparam.0 & 0xFFFF) as u16;
                 if ch >= 32 && ch != 127 {
                     if let Some(c) = char::from_u32(ch as u32) {
+                        // Settings panel active field routing
+                        let settings_field_active = EDITOR_STATE.with(|s| {
+                            s.borrow().as_ref().map(|state| state.borrow().settings_panel.active_field.is_some()).unwrap_or(false)
+                        });
+                        if settings_field_active {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().settings_panel.input_char(c);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                            return LRESULT(0);
+                        }
+
                         // 命令面板激活时，输入字符进入搜索框
                         let command_palette_active = EDITOR_STATE.with(|s| {
                             s.borrow().as_ref().map(|state| state.borrow().command_palette.visible).unwrap_or(false)
@@ -553,6 +630,68 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 let vk = VIRTUAL_KEY(wparam.0 as u16);
                 let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
                 let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
+
+                // Settings field active - intercept keyboard input
+                let settings_field_active = EDITOR_STATE.with(|s| {
+                    s.borrow().as_ref().map(|state| state.borrow().settings_panel.active_field.is_some()).unwrap_or(false)
+                });
+                if settings_field_active {
+                    match vk {
+                        VK_ESCAPE => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().settings_panel.active_field = None;
+                                    state.borrow_mut().render();
+                                }
+                            });
+                            return LRESULT(0);
+                        }
+                        VK_RETURN => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().settings_panel.active_field = None;
+                                    state.borrow_mut().render();
+                                }
+                            });
+                            return LRESULT(0);
+                        }
+                        VK_BACK => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().settings_panel.backspace();
+                                    state.borrow_mut().render();
+                                }
+                            });
+                            return LRESULT(0);
+                        }
+                        VK_DELETE => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().settings_panel.backspace();
+                                    state.borrow_mut().render();
+                                }
+                            });
+                            return LRESULT(0);
+                        }
+                        VK_TAB => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    if shift {
+                                        state.borrow_mut().settings_panel.prev_field();
+                                    } else {
+                                        state.borrow_mut().settings_panel.next_field();
+                                    }
+                                    state.borrow_mut().render();
+                                }
+                            });
+                            return LRESULT(0);
+                        }
+                        _ => {
+                            // Prevent editor from processing other keys while field is active
+                            return LRESULT(0);
+                        }
+                    }
+                }
 
                 // 命令面板激活时优先处理键盘导航
                 let command_palette_active = EDITOR_STATE.with(|s| {

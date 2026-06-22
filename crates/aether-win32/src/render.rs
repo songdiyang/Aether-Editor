@@ -230,6 +230,9 @@ impl EditorState {
                 crate::layout::SidebarContent::TerminalPanel => {
                     self.render_terminal_sidebar(target, x, y, width, height, &text_brush);
                 }
+                crate::layout::SidebarContent::SettingsPanel => {
+                    self.render_settings_sidebar(target, x, y, width, height, &text_brush);
+                }
             }
         }
     }
@@ -304,6 +307,216 @@ impl EditorState {
             let input: Vec<u16> = self.terminal_panel.input_line.encode_utf16().chain(Some(0)).collect();
             let input_rect = D2D_RECT_F { left: x + 25.0, top: line_y, right: x + width - 10.0, bottom: line_y + 18.0 };
             target.DrawText(&input, &mono_format, &input_rect, &output_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+        }
+    }
+
+    fn render_settings_sidebar(&mut self, target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget, x: f32, y: f32, width: f32, _height: f32, text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush) {
+        unsafe {
+            let label_format = self.text_format_cache.get_format(12.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
+            let input_format = self.text_format_cache.get_format(13.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32).unwrap();
+            let title_format = self.text_format_cache.get_format(14.0, DWRITE_FONT_WEIGHT_BOLD.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
+            let button_format = self.text_format_cache.get_format(13.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32, DWRITE_TEXT_ALIGNMENT_CENTER.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32).unwrap();
+
+            // Title
+            let title_text: Vec<u16> = "AI 设置".encode_utf16().chain(Some(0)).collect();
+            let title_rect = D2D_RECT_F { left: x + 10.0, top: y + 10.0, right: x + width - 10.0, bottom: y + 34.0 };
+            target.DrawText(&title_text, &title_format, &title_rect, text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+
+            // Separator
+            let sep_color = color_f(0.2, 0.2, 0.2, 1.0);
+            let sep_brush = self.brush_cache.get_brush(target, &sep_color).unwrap();
+            let sep_rect = D2D_RECT_F { left: x, top: y + 36.0, right: x + width, bottom: y + 37.0 };
+            target.FillRectangle(&sep_rect, &sep_brush);
+
+            self.settings_panel.clear_regions();
+
+            let margin = 10.0;
+            let input_w = width - margin * 2.0;
+            let label_h = 18.0;
+            let input_h = 28.0;
+            let gap = 12.0;
+
+            let mut cy = y + 48.0;
+
+            // Provider
+            let provider_label: Vec<u16> = "Provider (openai/claude/kimi/azure/custom)".encode_utf16().chain(Some(0)).collect();
+            let provider_label_rect = D2D_RECT_F { left: x + margin, top: cy, right: x + width - margin, bottom: cy + label_h };
+            target.DrawText(&provider_label, &label_format, &provider_label_rect, text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            cy += label_h;
+            let provider_bg = color_f(0.18, 0.18, 0.18, 1.0);
+            let provider_bg_brush = self.brush_cache.get_brush(target, &provider_bg).unwrap();
+            let provider_border = if self.settings_panel.active_field == Some(crate::settings::SettingsField::Provider) {
+                color_f(0.0, 0.47, 0.83, 1.0)
+            } else {
+                color_f(0.3, 0.3, 0.3, 1.0)
+            };
+            let provider_border_brush = self.brush_cache.get_brush(target, &provider_border).unwrap();
+            let provider_rect = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + input_w, bottom: cy + input_h };
+            target.FillRectangle(&provider_rect, &provider_bg_brush);
+            let border_top = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + input_w, bottom: cy + 1.0 };
+            let border_bottom = D2D_RECT_F { left: x + margin, top: cy + input_h - 1.0, right: x + margin + input_w, bottom: cy + input_h };
+            let border_left = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + 1.0, bottom: cy + input_h };
+            let border_right = D2D_RECT_F { left: x + margin + input_w - 1.0, top: cy, right: x + margin + input_w, bottom: cy + input_h };
+            target.FillRectangle(&border_top, &provider_border_brush);
+            target.FillRectangle(&border_bottom, &provider_border_brush);
+            target.FillRectangle(&border_left, &provider_border_brush);
+            target.FillRectangle(&border_right, &provider_border_brush);
+            let provider_text: Vec<u16> = self.settings_panel.provider.encode_utf16().chain(Some(0)).collect();
+            let provider_text_rect = D2D_RECT_F { left: x + margin + 6.0, top: cy, right: x + margin + input_w - 6.0, bottom: cy + input_h };
+            target.DrawText(&provider_text, &input_format, &provider_text_rect, text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            self.settings_panel.add_field_region(crate::settings::SettingsField::Provider, x + margin, cy, input_w, input_h);
+            cy += input_h + gap;
+
+            // API Key
+            let apikey_label: Vec<u16> = "API Key".encode_utf16().chain(Some(0)).collect();
+            let apikey_label_rect = D2D_RECT_F { left: x + margin, top: cy, right: x + width - margin, bottom: cy + label_h };
+            target.DrawText(&apikey_label, &label_format, &apikey_label_rect, text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            cy += label_h;
+            let apikey_bg = color_f(0.18, 0.18, 0.18, 1.0);
+            let apikey_bg_brush = self.brush_cache.get_brush(target, &apikey_bg).unwrap();
+            let apikey_border = if self.settings_panel.active_field == Some(crate::settings::SettingsField::ApiKey) {
+                color_f(0.0, 0.47, 0.83, 1.0)
+            } else {
+                color_f(0.3, 0.3, 0.3, 1.0)
+            };
+            let apikey_border_brush = self.brush_cache.get_brush(target, &apikey_border).unwrap();
+            let apikey_rect = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + input_w, bottom: cy + input_h };
+            target.FillRectangle(&apikey_rect, &apikey_bg_brush);
+            let border_top = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + input_w, bottom: cy + 1.0 };
+            let border_bottom = D2D_RECT_F { left: x + margin, top: cy + input_h - 1.0, right: x + margin + input_w, bottom: cy + input_h };
+            let border_left = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + 1.0, bottom: cy + input_h };
+            let border_right = D2D_RECT_F { left: x + margin + input_w - 1.0, top: cy, right: x + margin + input_w, bottom: cy + input_h };
+            target.FillRectangle(&border_top, &apikey_border_brush);
+            target.FillRectangle(&border_bottom, &apikey_border_brush);
+            target.FillRectangle(&border_left, &apikey_border_brush);
+            target.FillRectangle(&border_right, &apikey_border_brush);
+            let display_key = self.settings_panel.masked_api_key();
+            let apikey_text: Vec<u16> = display_key.encode_utf16().chain(Some(0)).collect();
+            let apikey_text_rect = D2D_RECT_F { left: x + margin + 6.0, top: cy, right: x + margin + input_w - 6.0, bottom: cy + input_h };
+            target.DrawText(&apikey_text, &input_format, &apikey_text_rect, text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            self.settings_panel.add_field_region(crate::settings::SettingsField::ApiKey, x + margin, cy, input_w, input_h);
+            cy += input_h + gap;
+
+            // Base URL
+            let baseurl_label: Vec<u16> = "Base URL (optional)".encode_utf16().chain(Some(0)).collect();
+            let baseurl_label_rect = D2D_RECT_F { left: x + margin, top: cy, right: x + width - margin, bottom: cy + label_h };
+            target.DrawText(&baseurl_label, &label_format, &baseurl_label_rect, text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            cy += label_h;
+            let baseurl_bg = color_f(0.18, 0.18, 0.18, 1.0);
+            let baseurl_bg_brush = self.brush_cache.get_brush(target, &baseurl_bg).unwrap();
+            let baseurl_border = if self.settings_panel.active_field == Some(crate::settings::SettingsField::BaseUrl) {
+                color_f(0.0, 0.47, 0.83, 1.0)
+            } else {
+                color_f(0.3, 0.3, 0.3, 1.0)
+            };
+            let baseurl_border_brush = self.brush_cache.get_brush(target, &baseurl_border).unwrap();
+            let baseurl_rect = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + input_w, bottom: cy + input_h };
+            target.FillRectangle(&baseurl_rect, &baseurl_bg_brush);
+            let border_top = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + input_w, bottom: cy + 1.0 };
+            let border_bottom = D2D_RECT_F { left: x + margin, top: cy + input_h - 1.0, right: x + margin + input_w, bottom: cy + input_h };
+            let border_left = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + 1.0, bottom: cy + input_h };
+            let border_right = D2D_RECT_F { left: x + margin + input_w - 1.0, top: cy, right: x + margin + input_w, bottom: cy + input_h };
+            target.FillRectangle(&border_top, &baseurl_border_brush);
+            target.FillRectangle(&border_bottom, &baseurl_border_brush);
+            target.FillRectangle(&border_left, &baseurl_border_brush);
+            target.FillRectangle(&border_right, &baseurl_border_brush);
+            let baseurl_text: Vec<u16> = self.settings_panel.base_url.encode_utf16().chain(Some(0)).collect();
+            let baseurl_text_rect = D2D_RECT_F { left: x + margin + 6.0, top: cy, right: x + margin + input_w - 6.0, bottom: cy + input_h };
+            target.DrawText(&baseurl_text, &input_format, &baseurl_text_rect, text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            self.settings_panel.add_field_region(crate::settings::SettingsField::BaseUrl, x + margin, cy, input_w, input_h);
+            cy += input_h + gap;
+
+            // Model
+            let model_label: Vec<u16> = "Model".encode_utf16().chain(Some(0)).collect();
+            let model_label_rect = D2D_RECT_F { left: x + margin, top: cy, right: x + width - margin, bottom: cy + label_h };
+            target.DrawText(&model_label, &label_format, &model_label_rect, text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            cy += label_h;
+            let model_bg = color_f(0.18, 0.18, 0.18, 1.0);
+            let model_bg_brush = self.brush_cache.get_brush(target, &model_bg).unwrap();
+            let model_border = if self.settings_panel.active_field == Some(crate::settings::SettingsField::Model) {
+                color_f(0.0, 0.47, 0.83, 1.0)
+            } else {
+                color_f(0.3, 0.3, 0.3, 1.0)
+            };
+            let model_border_brush = self.brush_cache.get_brush(target, &model_border).unwrap();
+            let model_rect = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + input_w, bottom: cy + input_h };
+            target.FillRectangle(&model_rect, &model_bg_brush);
+            let border_top = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + input_w, bottom: cy + 1.0 };
+            let border_bottom = D2D_RECT_F { left: x + margin, top: cy + input_h - 1.0, right: x + margin + input_w, bottom: cy + input_h };
+            let border_left = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + 1.0, bottom: cy + input_h };
+            let border_right = D2D_RECT_F { left: x + margin + input_w - 1.0, top: cy, right: x + margin + input_w, bottom: cy + input_h };
+            target.FillRectangle(&border_top, &model_border_brush);
+            target.FillRectangle(&border_bottom, &model_border_brush);
+            target.FillRectangle(&border_left, &model_border_brush);
+            target.FillRectangle(&border_right, &model_border_brush);
+            let model_text: Vec<u16> = self.settings_panel.model.encode_utf16().chain(Some(0)).collect();
+            let model_text_rect = D2D_RECT_F { left: x + margin + 6.0, top: cy, right: x + margin + input_w - 6.0, bottom: cy + input_h };
+            target.DrawText(&model_text, &input_format, &model_text_rect, text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            self.settings_panel.add_field_region(crate::settings::SettingsField::Model, x + margin, cy, input_w, input_h);
+            cy += input_h + gap + 8.0;
+
+            let btn_w = input_w;
+            let btn_h = 32.0;
+
+            // Save button
+            let save_bg = if self.settings_panel.hover_button == Some(crate::settings::SettingsButton::Save) {
+                color_f(0.0, 0.55, 0.95, 1.0)
+            } else {
+                color_f(0.0, 0.47, 0.83, 1.0)
+            };
+            let save_bg_brush = self.brush_cache.get_brush(target, &save_bg).unwrap();
+            let save_rect = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + btn_w, bottom: cy + btn_h };
+            target.FillRectangle(&save_rect, &save_bg_brush);
+            let save_text: Vec<u16> = "保存设置".encode_utf16().chain(Some(0)).collect();
+            let save_text_rect = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + btn_w, bottom: cy + btn_h };
+            let btn_text_color = color_f(1.0, 1.0, 1.0, 1.0);
+            let btn_text_brush = self.brush_cache.get_brush(target, &btn_text_color).unwrap();
+            target.DrawText(&save_text, &button_format, &save_text_rect, &btn_text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            self.settings_panel.add_button_region(crate::settings::SettingsButton::Save, x + margin, cy, btn_w, btn_h);
+            cy += btn_h + gap;
+
+            // Test Connection button
+            let test_bg = if self.settings_panel.hover_button == Some(crate::settings::SettingsButton::TestConnection) {
+                color_f(0.25, 0.25, 0.25, 1.0)
+            } else {
+                color_f(0.18, 0.18, 0.18, 1.0)
+            };
+            let test_bg_brush = self.brush_cache.get_brush(target, &test_bg).unwrap();
+            let test_border = color_f(0.3, 0.3, 0.3, 1.0);
+            let test_border_brush = self.brush_cache.get_brush(target, &test_border).unwrap();
+            let test_rect = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + btn_w, bottom: cy + btn_h };
+            target.FillRectangle(&test_rect, &test_bg_brush);
+            let test_border_top = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + btn_w, bottom: cy + 1.0 };
+            let test_border_bottom = D2D_RECT_F { left: x + margin, top: cy + btn_h - 1.0, right: x + margin + btn_w, bottom: cy + btn_h };
+            let test_border_left = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + 1.0, bottom: cy + btn_h };
+            let test_border_right = D2D_RECT_F { left: x + margin + btn_w - 1.0, top: cy, right: x + margin + btn_w, bottom: cy + btn_h };
+            target.FillRectangle(&test_border_top, &test_border_brush);
+            target.FillRectangle(&test_border_bottom, &test_border_brush);
+            target.FillRectangle(&test_border_left, &test_border_brush);
+            target.FillRectangle(&test_border_right, &test_border_brush);
+            let test_text: Vec<u16> = "测试连接".encode_utf16().chain(Some(0)).collect();
+            let test_text_rect = D2D_RECT_F { left: x + margin, top: cy, right: x + margin + btn_w, bottom: cy + btn_h };
+            let test_text_color = color_f(0.85, 0.85, 0.85, 1.0);
+            let test_text_brush = self.brush_cache.get_brush(target, &test_text_color).unwrap();
+            target.DrawText(&test_text, &button_format, &test_text_rect, &test_text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            self.settings_panel.add_button_region(crate::settings::SettingsButton::TestConnection, x + margin, cy, btn_w, btn_h);
+            cy += btn_h + 8.0;
+
+            // Status message
+            if !self.settings_panel.test_status.is_empty() {
+                let status_color = if self.settings_panel.is_testing {
+                    color_f(0.8, 0.8, 0.4, 1.0)
+                } else if self.settings_panel.test_status.starts_with("成功") {
+                    color_f(0.2, 0.8, 0.2, 1.0)
+                } else {
+                    color_f(0.9, 0.3, 0.3, 1.0)
+                };
+                let status_brush = self.brush_cache.get_brush(target, &status_color).unwrap();
+                let status_format = self.text_format_cache.get_format(11.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
+                let status_text: Vec<u16> = self.settings_panel.test_status.encode_utf16().chain(Some(0)).collect();
+                let status_rect = D2D_RECT_F { left: x + margin, top: cy, right: x + width - margin, bottom: cy + 40.0 };
+                target.DrawText(&status_text, &status_format, &status_rect, &status_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            }
         }
     }
 

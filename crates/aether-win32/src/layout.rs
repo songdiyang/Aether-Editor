@@ -31,6 +31,7 @@ pub enum ActivityBarView {
     Explorer,
     SourceControl,
     Terminal,
+    Settings,
 }
 
 impl ActivityBarView {
@@ -39,6 +40,7 @@ impl ActivityBarView {
             ActivityBarView::Explorer => "资源管理器",
             ActivityBarView::SourceControl => "源代码管理",
             ActivityBarView::Terminal => "终端",
+            ActivityBarView::Settings => "设置",
         }
     }
 
@@ -47,6 +49,7 @@ impl ActivityBarView {
             ActivityBarView::Explorer => "📁",
             ActivityBarView::SourceControl => "🌿",
             ActivityBarView::Terminal => "⌨",
+            ActivityBarView::Settings => "⚙",
         }
     }
 }
@@ -57,6 +60,7 @@ pub enum SidebarContent {
     FileTree,
     SourceControlPanel,
     TerminalPanel,
+    SettingsPanel,
 }
 
 impl SidebarContent {
@@ -65,6 +69,7 @@ impl SidebarContent {
             ActivityBarView::Explorer => SidebarContent::FileTree,
             ActivityBarView::SourceControl => SidebarContent::SourceControlPanel,
             ActivityBarView::Terminal => SidebarContent::TerminalPanel,
+            ActivityBarView::Settings => SidebarContent::SettingsPanel,
         }
     }
 }
