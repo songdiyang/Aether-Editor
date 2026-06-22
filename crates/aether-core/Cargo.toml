@@ -1,0 +1,11 @@
+[package]
+name = "aether-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+memmap2 = "0.9"
+smallvec = "1.13"
+
+[dev-dependencies]
+rand = "0.8"

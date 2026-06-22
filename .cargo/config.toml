@@ -1,0 +1,26 @@
+[http]
+timeout = 120
+low-speed-limit = 10
+
+[source.crates-io]
+replace-with = 'tuna'
+
+[source.tuna]
+registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
+
+[build]
+target = "x86_64-pc-windows-msvc"
+rustflags = ["-C", "target-cpu=sandybridge"]
+
+[profile.dev]
+opt-level = 1
+incremental = true
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+debug = false
+strip = true
+incremental = false

@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "crates/aether-core",
+    "crates/aether-render",
+    "crates/aether-win32",
+    "crates/aether-lsp",
+    "crates/aether-tree-sitter",
+    "crates/aether-dap",
+    "crates/aether-plugin",
+    "crates/aether-remote",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Aether Team"]
+license = "MIT"
+rust-version = "1.70"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+debug = false
+strip = true
+incremental = false
