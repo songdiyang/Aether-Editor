@@ -286,7 +286,7 @@ impl EditorState {
     pub fn new(hwnd: HWND) -> Result<Self> {
         let d2d_factory = D2DFactory::new()?;
         let text_renderer = TextRenderer::new()?;
-        let theme = Theme::dark();
+        let theme = Theme::glass();
         let buffer = PieceTable::from_string(String::new());
         let key_map = KeyMap::new();
 

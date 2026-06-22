@@ -1,6 +1,7 @@
 use aether_core::lexer::Language;
 use aether_core::workspace::file_tree::{FileKind, FileTree};
 use aether_render::d2d::factory::color_f;
+use aether_render::d2d::glass;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE;
 use windows::Win32::Graphics::DirectWrite::{
@@ -38,6 +39,13 @@ impl EditorState {
                     self.theme.text_default,
                     self.theme.tab_active_bg,
                     self.theme.tab_inactive_bg,
+                    self.theme.titlebar_bg,
+                    self.theme.activity_bar_bg,
+                    self.theme.panel_border,
+                    self.theme.shadow,
+                    self.theme.glow_selection,
+                    self.theme.command_palette_bg,
+                    self.theme.submenu_bg,
                 ];
                 self.brush_cache.init_common_brushes(&target, &common_colors);
                 let font_size = self.text_renderer.font_size();
@@ -192,6 +200,13 @@ impl EditorState {
                             self.theme.text_default,
                             self.theme.tab_active_bg,
                             self.theme.tab_inactive_bg,
+                            self.theme.titlebar_bg,
+                            self.theme.activity_bar_bg,
+                            self.theme.panel_border,
+                            self.theme.shadow,
+                            self.theme.glow_selection,
+                            self.theme.command_palette_bg,
+                            self.theme.submenu_bg,
                         ];
                         self.brush_cache.init_common_brushes(&target, &common_colors);
                         let font_size = self.text_renderer.font_size();
@@ -210,15 +225,25 @@ impl EditorState {
 
         unsafe {
             let bg_brush = self.brush_cache.get_brush(target, &self.theme.sidebar_bg).unwrap();
-            let border_color = color_f(0.2, 0.2, 0.2, 1.0);
+            let border_color = if self.theme.glass_enabled {
+                self.theme.panel_border
+            } else {
+                color_f(0.2, 0.2, 0.2, 1.0)
+            };
             let border_brush = self.brush_cache.get_brush(target, &border_color).unwrap();
             let text_brush = self.brush_cache.get_brush(target, &self.theme.text_default).unwrap();
 
             let bg_rect = D2D_RECT_F { left: x, top: y, right: x + width, bottom: y + height };
             target.FillRectangle(&bg_rect, &bg_brush);
 
+            // 侧边栏右边缘柔和边框
             let border_rect = D2D_RECT_F { left: x + width - 1.0, top: y, right: x + width, bottom: y + height };
             target.FillRectangle(&border_rect, &border_brush);
+
+            // Glass 模式下添加微妙阴影，增加层次感
+            if self.theme.glass_enabled {
+                let _ = glass::draw_panel_shadow(target, &mut self.brush_cache, &bg_rect, &self.theme.shadow, 2.0);
+            }
 
             match &self.sidebar_content {
                 crate::layout::SidebarContent::FileTree => {
@@ -243,9 +268,17 @@ impl EditorState {
 
             if let Some(tree) = &self.file_tree {
                 let mut current_y = y + 10.0 - self.sidebar_scroll_y;
-                let sel_color = color_f(0.0, 0.47, 0.83, 1.0);
+                let sel_color = if self.theme.glass_enabled {
+                    self.theme.glow_selection
+                } else {
+                    color_f(0.0, 0.47, 0.83, 1.0)
+                };
                 let sel_brush = self.brush_cache.get_brush(target, &sel_color).unwrap();
-                let hover_color = color_f(0.2, 0.2, 0.2, 1.0);
+                let hover_color = if self.theme.glass_enabled {
+                    color_f(0.25, 0.25, 0.27, 0.70)
+                } else {
+                    color_f(0.2, 0.2, 0.2, 1.0)
+                };
                 let hover_brush = self.brush_cache.get_brush(target, &hover_color).unwrap();
                 self.render_tree_nodes(target, tree, u32::MAX, x + 10.0, &mut current_y, y, height, width, &tree_format, &text_brush, &dir_brush, &sel_brush, &hover_brush);
             } else {
@@ -276,7 +309,11 @@ impl EditorState {
             target.DrawText(&title, &ui_format, &title_rect, text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
             
             // 分隔线
-            let sep_color = color_f(0.2, 0.2, 0.2, 1.0);
+            let sep_color = if self.theme.glass_enabled {
+                self.theme.panel_border
+            } else {
+                color_f(0.2, 0.2, 0.2, 1.0)
+            };
             let sep_brush = self.brush_cache.get_brush(target, &sep_color).unwrap();
             let sep_rect = D2D_RECT_F { left: x, top: y + 30.0, right: x + width, bottom: y + 31.0 };
             target.FillRectangle(&sep_rect, &sep_brush);
@@ -503,7 +540,7 @@ impl EditorState {
                     None
                 };
 
-                // Selection highlight
+                // Selection highlight — Glass 模式下使用柔和光晕
                 if let (Some((sel_start_line, sel_start_col)), Some((sel_end_line, sel_end_col))) = (self.selection_start, self.selection_end) {
                     let (first_line, first_col) = if sel_start_line <= sel_end_line { (sel_start_line, sel_start_col) } else { (sel_end_line, sel_end_col) };
                     let (last_line, last_col) = if sel_start_line <= sel_end_line { (sel_end_line, sel_end_col) } else { (sel_start_line, sel_start_col) };
@@ -520,7 +557,11 @@ impl EditorState {
                         let sel_start_x = x + line_number_width + 5.0 + sel_start_char as f32 * char_width;
                         let sel_end_x = x + line_number_width + 5.0 + sel_end_char as f32 * char_width;
                         let sel_rect = D2D_RECT_F { left: sel_start_x, top: line_y, right: sel_end_x, bottom: line_y + line_height };
-                        target.FillRectangle(&sel_rect, &sel_brush);
+                        if self.theme.glass_enabled {
+                            let _ = glass::draw_glow_selection(target, &mut self.brush_cache, &sel_rect, &self.theme.glow_selection, 2.0);
+                        } else {
+                            target.FillRectangle(&sel_rect, &sel_brush);
+                        }
                     }
                 }
 
@@ -652,19 +693,38 @@ impl EditorState {
 
     fn render_tab_bar(&mut self, target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget, x: f32, y: f32, width: f32, height: f32) {
         unsafe {
-            let bg_color = color_f(0.145, 0.145, 0.149, 1.0);
+            let bg_color = if self.theme.glass_enabled {
+                self.theme.tab_inactive_bg
+            } else {
+                color_f(0.145, 0.145, 0.149, 1.0)
+            };
             let bg_brush = self.brush_cache.get_brush(target, &bg_color).unwrap();
             let active_bg_brush = self.brush_cache.get_brush(target, &self.theme.tab_active_bg).unwrap();
             let inactive_bg_brush = self.brush_cache.get_brush(target, &self.theme.tab_inactive_bg).unwrap();
-            let hover_color = color_f(0.22, 0.22, 0.24, 1.0);
+            let hover_color = if self.theme.glass_enabled {
+                color_f(0.25, 0.25, 0.27, 0.85)
+            } else {
+                color_f(0.22, 0.22, 0.24, 1.0)
+            };
             let hover_bg_brush = self.brush_cache.get_brush(target, &hover_color).unwrap();
             let text_brush = self.brush_cache.get_brush(target, &self.theme.text_default).unwrap();
             let active_text_color = color_f(1.0, 1.0, 1.0, 1.0);
             let active_text_brush = self.brush_cache.get_brush(target, &active_text_color).unwrap();
             let close_color = color_f(0.6, 0.6, 0.6, 1.0);
             let close_brush = self.brush_cache.get_brush(target, &close_color).unwrap();
-            let border_color = color_f(0.2, 0.2, 0.2, 1.0);
+            let border_color = if self.theme.glass_enabled {
+                self.theme.panel_border
+            } else {
+                color_f(0.2, 0.2, 0.2, 1.0)
+            };
             let border_brush = self.brush_cache.get_brush(target, &border_color).unwrap();
+            // 活动标签发光颜色（玻璃模式下 brighter glow）
+            let glow_color = if self.theme.glass_enabled {
+                color_f(0.35, 0.35, 0.38, 0.90)
+            } else {
+                color_f(0.22, 0.22, 0.24, 1.0)
+            };
+            let glow_brush = self.brush_cache.get_brush(target, &glow_color).unwrap();
 
             // 背景
             let bg_rect = D2D_RECT_F { left: x, top: y, right: x + width, bottom: y + height };
@@ -687,8 +747,8 @@ impl EditorState {
                     bottom: if is_active { y + height } else { y + height - 2.0 },
                 };
 
-                // 标签背景
-                let bg = if is_active { &active_bg_brush } else if is_hover { &hover_bg_brush } else { &inactive_bg_brush };
+                // 标签背景 — 玻璃模式下活动标签使用更亮的 elevated surface
+                let bg = if is_active { &glow_brush } else if is_hover { &hover_bg_brush } else { &inactive_bg_brush };
                 target.FillRectangle(&tab_rect, bg);
 
                 // 活动标签顶部高亮线
@@ -753,11 +813,22 @@ impl EditorState {
             let bg_brush = self.brush_cache.get_brush(target, &self.theme.statusbar_bg).unwrap();
             let text_color = color_f(1.0, 1.0, 1.0, 1.0);
             let text_brush = self.brush_cache.get_brush(target, &text_color).unwrap();
-            let sep_color = color_f(0.3, 0.3, 0.3, 1.0);
+            let sep_color = if self.theme.glass_enabled {
+                self.theme.panel_border
+            } else {
+                color_f(0.3, 0.3, 0.3, 1.0)
+            };
             let sep_brush = self.brush_cache.get_brush(target, &sep_color).unwrap();
 
             let bg_rect = D2D_RECT_F { left: x, top: y, right: x + width, bottom: y + height };
             target.FillRectangle(&bg_rect, &bg_brush);
+
+            // Glass 模式下添加顶部柔和边框和阴影
+            if self.theme.glass_enabled {
+                let top_border = D2D_RECT_F { left: x, top: y, right: x + width, bottom: y + 1.0 };
+                target.FillRectangle(&top_border, &sep_brush);
+                let _ = glass::draw_panel_shadow(target, &mut self.brush_cache, &bg_rect, &self.theme.shadow, 3.0);
+            }
 
             // 更新状态栏数据
             let mut status = self.status_bar.clone();
@@ -822,11 +893,19 @@ impl EditorState {
         }
 
         unsafe {
-            let bg_color = color_f(0.137, 0.137, 0.137, 1.0);
+            let bg_color = if self.theme.glass_enabled {
+                self.theme.titlebar_bg
+            } else {
+                color_f(0.137, 0.137, 0.137, 1.0)
+            };
             let bg_brush = self.brush_cache.get_brush(target, &bg_color).unwrap();
             let text_color = color_f(0.85, 0.85, 0.85, 1.0);
             let text_brush = self.brush_cache.get_brush(target, &text_color).unwrap();
-            let hover_color = color_f(0.25, 0.25, 0.25, 1.0);
+            let hover_color = if self.theme.glass_enabled {
+                color_f(0.25, 0.25, 0.25, 0.80)
+            } else {
+                color_f(0.25, 0.25, 0.25, 1.0)
+            };
             let hover_brush = self.brush_cache.get_brush(target, &hover_color).unwrap();
             let active_color = color_f(0.0, 0.47, 0.83, 1.0);
             let active_brush = self.brush_cache.get_brush(target, &active_color).unwrap();
@@ -868,11 +947,23 @@ impl EditorState {
         let height = region.height;
 
         unsafe {
-            // 标题栏背景（使用与菜单栏一致的深色）
-            let bg_color = color_f(0.137, 0.137, 0.137, 1.0);
+            // 标题栏背景 — 玻璃模式下使用半透明暗色
+            let bg_color = if self.theme.glass_enabled {
+                self.theme.titlebar_bg
+            } else {
+                color_f(0.137, 0.137, 0.137, 1.0)
+            };
             let bg_brush = self.brush_cache.get_brush(target, &bg_color).unwrap();
             let bg_rect = D2D_RECT_F { left: x, top: y, right: x + width, bottom: y + height };
             target.FillRectangle(&bg_rect, &bg_brush);
+
+            // 玻璃模式下添加底部柔和边框和阴影
+            if self.theme.glass_enabled {
+                let border_brush = self.brush_cache.get_brush(target, &self.theme.panel_border).unwrap();
+                let bottom_border = D2D_RECT_F { left: x, top: y + height - 1.0, right: x + width, bottom: y + height };
+                target.FillRectangle(&bottom_border, &border_brush);
+                let _ = glass::draw_panel_shadow(target, &mut self.brush_cache, &bg_rect, &self.theme.shadow, 2.0);
+            }
 
             // 按钮宽度
             let btn_width = 46.0;
@@ -882,9 +973,21 @@ impl EditorState {
             let minimize_x = maximize_x - btn_width;
 
             // 按钮颜色
-            let default_bg = color_f(0.137, 0.137, 0.137, 1.0);
-            let hover_min_bg = color_f(0.25, 0.25, 0.25, 1.0);
-            let hover_max_bg = color_f(0.25, 0.25, 0.25, 1.0);
+            let default_bg = if self.theme.glass_enabled {
+                self.theme.titlebar_bg
+            } else {
+                color_f(0.137, 0.137, 0.137, 1.0)
+            };
+            let hover_min_bg = if self.theme.glass_enabled {
+                color_f(0.25, 0.25, 0.25, 0.80)
+            } else {
+                color_f(0.25, 0.25, 0.25, 1.0)
+            };
+            let hover_max_bg = if self.theme.glass_enabled {
+                color_f(0.25, 0.25, 0.25, 0.80)
+            } else {
+                color_f(0.25, 0.25, 0.25, 1.0)
+            };
             let hover_close_bg = color_f(0.85, 0.15, 0.15, 1.0);
             let icon_color = color_f(0.85, 0.85, 0.85, 1.0);
             let icon_brush = self.brush_cache.get_brush(target, &icon_color).unwrap();
@@ -892,7 +995,11 @@ impl EditorState {
             // 在标题栏左侧绘制菜单项
             let text_color = color_f(0.85, 0.85, 0.85, 1.0);
             let text_brush = self.brush_cache.get_brush(target, &text_color).unwrap();
-            let hover_color = color_f(0.25, 0.25, 0.25, 1.0);
+            let hover_color = if self.theme.glass_enabled {
+                color_f(0.25, 0.25, 0.25, 0.80)
+            } else {
+                color_f(0.25, 0.25, 0.25, 1.0)
+            };
             let hover_brush = self.brush_cache.get_brush(target, &hover_color).unwrap();
             let active_color = color_f(0.0, 0.47, 0.83, 1.0);
             let active_brush = self.brush_cache.get_brush(target, &active_color).unwrap();
@@ -979,13 +1086,21 @@ impl EditorState {
 
     fn render_submenu(&mut self, target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget, x: f32, y: f32, menu_item: &crate::menu_bar::MenuBarItem) {
         unsafe {
-            let bg_color = color_f(0.18, 0.18, 0.18, 1.0);
+            let bg_color = if self.theme.glass_enabled {
+                self.theme.submenu_bg
+            } else {
+                color_f(0.18, 0.18, 0.18, 1.0)
+            };
             let bg_brush = self.brush_cache.get_brush(target, &bg_color).unwrap();
             let text_color = color_f(0.85, 0.85, 0.85, 1.0);
             let text_brush = self.brush_cache.get_brush(target, &text_color).unwrap();
             let disabled_color = color_f(0.5, 0.5, 0.5, 1.0);
             let disabled_brush = self.brush_cache.get_brush(target, &disabled_color).unwrap();
-            let sep_color = color_f(0.3, 0.3, 0.3, 1.0);
+            let sep_color = if self.theme.glass_enabled {
+                self.theme.panel_border
+            } else {
+                color_f(0.3, 0.3, 0.3, 1.0)
+            };
             let sep_brush = self.brush_cache.get_brush(target, &sep_color).unwrap();
 
             let text_format = self.text_format_cache.get_format(13.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
@@ -1000,6 +1115,16 @@ impl EditorState {
 
             let bg_rect = D2D_RECT_F { left: x, top: y, right: x + menu_width, bottom: y + total_height };
             target.FillRectangle(&bg_rect, &bg_brush);
+
+            // 玻璃模式下添加边框和阴影
+            if self.theme.glass_enabled {
+                let border_brush = self.brush_cache.get_brush(target, &self.theme.panel_border).unwrap();
+                let top_border = D2D_RECT_F { left: x, top: y, right: x + menu_width, bottom: y + 1.0 };
+                target.FillRectangle(&top_border, &border_brush);
+                let bottom_border = D2D_RECT_F { left: x, top: y + total_height - 1.0, right: x + menu_width, bottom: y + total_height };
+                target.FillRectangle(&bottom_border, &border_brush);
+                let _ = glass::draw_panel_shadow(target, &mut self.brush_cache, &bg_rect, &self.theme.shadow, 4.0);
+            }
 
             let mut item_y = y + 8.0;
             for item in &menu_item.items {
@@ -1041,19 +1166,34 @@ impl EditorState {
         let height = region.height;
 
         unsafe {
-            let bg_color = color_f(0.137, 0.137, 0.137, 1.0);
+            let bg_color = if self.theme.glass_enabled {
+                self.theme.activity_bar_bg
+            } else {
+                color_f(0.137, 0.137, 0.137, 1.0)
+            };
             let bg_brush = self.brush_cache.get_brush(target, &bg_color).unwrap();
             let active_color = color_f(1.0, 1.0, 1.0, 1.0);
             let active_brush = self.brush_cache.get_brush(target, &active_color).unwrap();
             let inactive_color = color_f(0.5, 0.5, 0.5, 1.0);
             let inactive_brush = self.brush_cache.get_brush(target, &inactive_color).unwrap();
-            let hover_color = color_f(0.25, 0.25, 0.25, 1.0);
+            let hover_color = if self.theme.glass_enabled {
+                color_f(0.25, 0.25, 0.27, 0.80)
+            } else {
+                color_f(0.25, 0.25, 0.25, 1.0)
+            };
             let hover_brush = self.brush_cache.get_brush(target, &hover_color).unwrap();
             let active_indicator_color = color_f(1.0, 1.0, 1.0, 1.0);
             let active_indicator_brush = self.brush_cache.get_brush(target, &active_indicator_color).unwrap();
 
             let bg_rect = D2D_RECT_F { left: x, top: y, right: x + width, bottom: y + height };
             target.FillRectangle(&bg_rect, &bg_brush);
+
+            // 玻璃模式下右侧柔和边框
+            if self.theme.glass_enabled {
+                let border_brush = self.brush_cache.get_brush(target, &self.theme.panel_border).unwrap();
+                let right_border = D2D_RECT_F { left: x + width - 1.0, top: y, right: x + width, bottom: y + height };
+                target.FillRectangle(&right_border, &border_brush);
+            }
 
             let icon_format = self.text_format_cache.get_format(20.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32, DWRITE_TEXT_ALIGNMENT_CENTER.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32).unwrap();
 
@@ -1159,11 +1299,19 @@ impl EditorState {
             let visible_count = self.command_palette.visible_count();
             let total_height = input_height + (visible_count as f32 * item_height) + 16.0;
 
-            let bg_color = color_f(0.18, 0.18, 0.18, 1.0);
+            let bg_color = if self.theme.glass_enabled {
+                self.theme.command_palette_bg
+            } else {
+                color_f(0.18, 0.18, 0.18, 1.0)
+            };
             let bg_brush = self.brush_cache.get_brush(target, &bg_color).unwrap();
             let border_color = color_f(0.0, 0.47, 0.83, 1.0);
             let border_brush = self.brush_cache.get_brush(target, &border_color).unwrap();
-            let input_bg_color = color_f(0.12, 0.12, 0.12, 1.0);
+            let input_bg_color = if self.theme.glass_enabled {
+                color_f(0.12, 0.12, 0.12, 0.85)
+            } else {
+                color_f(0.12, 0.12, 0.12, 1.0)
+            };
             let input_bg_brush = self.brush_cache.get_brush(target, &input_bg_color).unwrap();
             let text_brush = self.brush_cache.get_brush(target, &self.theme.text_default).unwrap();
             let selected_brush = self.brush_cache.get_brush(target, &border_color).unwrap();
@@ -1179,6 +1327,16 @@ impl EditorState {
                 bottom: y + total_height,
             };
             target.FillRectangle(&bg_rect, &bg_brush);
+
+            // 玻璃模式下添加边框和阴影
+            if self.theme.glass_enabled {
+                let panel_border = self.brush_cache.get_brush(target, &self.theme.panel_border).unwrap();
+                let top_border = D2D_RECT_F { left: x, top: y, right: x + width, bottom: y + 1.0 };
+                target.FillRectangle(&top_border, &panel_border);
+                let bottom_border = D2D_RECT_F { left: x, top: y + total_height - 1.0, right: x + width, bottom: y + total_height };
+                target.FillRectangle(&bottom_border, &panel_border);
+                let _ = glass::draw_panel_shadow(target, &mut self.brush_cache, &bg_rect, &self.theme.shadow, 6.0);
+            }
 
             let border_rect = D2D_RECT_F {
                 left: x,

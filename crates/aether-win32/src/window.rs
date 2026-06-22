@@ -28,6 +28,43 @@ fn set_dpi_awareness() {
     }
 }
 
+/// 启用 DWM Acrylic / Mica  backdrop 效果
+fn enable_dwm_acrylic(hwnd: HWND) {
+    unsafe {
+        // DWM 属性常量（Windows 10 1903+ / Windows 11）
+        const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+        const DWMWA_USE_HOST_BACKDROP_BRUSH: u32 = 17;
+        const DWMWA_MICA_EFFECT: u32 = 1029;
+        const DWBT_MAINWINDOW: u32 = 0;
+
+        // 启用沉浸式暗色模式
+        let dark_mode: windows::Win32::Foundation::BOOL = true.into();
+        let _ = windows::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark_mode as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<windows::Win32::Foundation::BOOL>() as u32,
+        );
+
+        // Windows 11: 使用主机 backdrop brush (Acrylic/Mica)
+        let _ = windows::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_HOST_BACKDROP_BRUSH,
+            &DWBT_MAINWINDOW as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+
+        // Windows 11 备选：Mica 效果
+        let mica_enabled: windows::Win32::Foundation::BOOL = true.into();
+        let _ = windows::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_MICA_EFFECT,
+            &mica_enabled as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<windows::Win32::Foundation::BOOL>() as u32,
+        );
+    }
+}
+
 /// 获取 DPI 缩放比例和缩放后的窗口大小
 fn get_dpi_scaled_size(base_width: i32, base_height: i32) -> (f32, i32, i32) {
     unsafe {
@@ -69,7 +106,7 @@ pub fn run() {
 
         let title: Vec<u16> = WINDOW_TITLE.encode_utf16().chain(Some(0)).collect();
         let hwnd = CreateWindowExW(
-            WS_EX_APPWINDOW, // 显示在任务栏
+            WS_EX_APPWINDOW,
             windows::core::PCWSTR(class_name.as_ptr()),
             windows::core::PCWSTR(title.as_ptr()),
             WS_POPUP | WS_VISIBLE | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
@@ -82,6 +119,9 @@ pub fn run() {
             instance,
             None,
         ).unwrap();
+
+        // 启用 DWM Acrylic / Mica 效果
+        enable_dwm_acrylic(hwnd);
 
         let state = EditorState::new(hwnd).unwrap();
         let state_rc = Rc::new(RefCell::new(state));
