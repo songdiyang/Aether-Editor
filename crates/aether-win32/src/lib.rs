@@ -14,4 +14,5 @@ pub mod command_palette;
 pub mod git;
 pub mod uia;
 pub mod ime;
+pub mod ssh;
 pub mod terminal;
