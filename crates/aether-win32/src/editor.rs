@@ -48,6 +48,8 @@ pub struct EditorState {
     pub(crate) line_cache_versions: Vec<u64>,
     /// 全局编辑版本号，用于行级缓存失效
     pub(crate) buffer_version: u64,
+    /// 行号 UTF-16 预缓存（避免每帧 format! + encode_utf16 分配）
+    pub(crate) cached_line_numbers: Vec<Vec<u16>>,
     // 当前语言
     pub(crate) language: Language,
     /// 标签页系统（后台存储，切换时同步）
@@ -102,6 +104,8 @@ pub struct EditorState {
     pub selected_file_node: Option<u32>,
     /// 文件树中鼠标悬停的节点索引
     pub hover_file_node: Option<u32>,
+    /// 侧边栏滚动偏移（用于文件树虚拟滚动）
+    pub sidebar_scroll_y: f32,
 }
 
 impl EditorState {
@@ -303,6 +307,7 @@ impl EditorState {
             cached_tokens: Vec::new(),
             line_cache_versions: Vec::new(),
             buffer_version: 0,
+            cached_line_numbers: Vec::new(),
             language: Language::PlainText,
             tabs: Vec::new(),
             active_tab: 0,
@@ -338,6 +343,7 @@ impl EditorState {
             titlebar_hover_button: None,
             selected_file_node: None,
             hover_file_node: None,
+            sidebar_scroll_y: 0.0,
         };
         // 创建第一个标签页并同步
         state.tabs.push(Tab::new());
@@ -685,6 +691,23 @@ impl EditorState {
         let editor_height = self.window_height as f32 - 24.0;
         let max_scroll = (total_height - editor_height).max(0.0);
         self.scroll_y = (self.scroll_y + delta_y).clamp(0.0, max_scroll);
+    }
+
+    /// 侧边栏滚动（文件树虚拟滚动）
+    pub fn scroll_sidebar(&mut self, delta_y: f32) {
+        // 估算文件树总高度：每个节点 20px，加上顶部 padding
+        // 精确计算需要遍历树，但这里用近似值即可
+        let node_height = 20.0;
+        let estimated_nodes = if let Some(tree) = &self.file_tree {
+            tree.len() as f32
+        } else {
+            0.0
+        };
+        let total_height = estimated_nodes * node_height + 20.0; // +20 for top padding
+        let sidebar_region = self.layout.sidebar_region();
+        let visible_height = sidebar_region.height;
+        let max_scroll = (total_height - visible_height).max(0.0);
+        self.sidebar_scroll_y = (self.sidebar_scroll_y + delta_y).clamp(0.0, max_scroll);
     }
 
     /// 设置剪贴板文本
@@ -1445,6 +1468,11 @@ impl EditorState {
             self.line_cache_versions.resize(total_lines, 0);
         }
 
+        // 调整行号 UTF-16 缓存大小
+        if self.cached_line_numbers.len() != total_lines {
+            self.cached_line_numbers.resize_with(total_lines, || Vec::new());
+        }
+
         // 只重建可见行范围内的缓存（加上前后各2行的缓冲，避免滚动时闪烁）
         let cache_start = visible_start.saturating_sub(2);
         let cache_end = (visible_end + 2).min(total_lines);
@@ -1456,6 +1484,11 @@ impl EditorState {
                 self.cached_lines[i] = line;
                 self.cached_tokens[i] = tokens;
                 self.line_cache_versions[i] = self.buffer_version;
+            }
+            // 行号 UTF-16 缓存：如果为空则构建
+            if self.cached_line_numbers[i].is_empty() {
+                let num_str = format!("{}", i + 1);
+                self.cached_line_numbers[i] = num_str.encode_utf16().chain(Some(0)).collect();
             }
         }
     }
