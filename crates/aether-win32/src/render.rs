@@ -23,6 +23,26 @@ impl EditorState {
         // 确保渲染目标存在（设备丢失后重建）
         if self.render_target.is_none() {
             let _ = self.init_render_target();
+            // 渲染目标就绪后预初始化常用画笔和文本格式
+            if let Some(rt) = &self.render_target {
+                let target = rt.target().clone();
+                let common_colors = [
+                    self.theme.editor_bg,
+                    self.theme.line_number_bg,
+                    self.theme.line_number_fg,
+                    self.theme.line_highlight_bg,
+                    self.theme.selection_bg,
+                    self.theme.cursor_color,
+                    self.theme.sidebar_bg,
+                    self.theme.statusbar_bg,
+                    self.theme.text_default,
+                    self.theme.tab_active_bg,
+                    self.theme.tab_inactive_bg,
+                ];
+                self.brush_cache.init_common_brushes(&target, &common_colors);
+                let font_size = self.text_renderer.font_size();
+                self.text_format_cache.init_common_formats(font_size);
+            }
         }
 
         // 计算编辑器可见行范围，用于增量缓存重建
@@ -156,6 +176,27 @@ impl EditorState {
                     self.render_target = None;
                     self.brush_cache.clear();
                     self.text_format_cache.clear();
+                    // 重建渲染目标并重新预初始化
+                    let _ = self.init_render_target();
+                    if let Some(rt) = &self.render_target {
+                        let target = rt.target().clone();
+                        let common_colors = [
+                            self.theme.editor_bg,
+                            self.theme.line_number_bg,
+                            self.theme.line_number_fg,
+                            self.theme.line_highlight_bg,
+                            self.theme.selection_bg,
+                            self.theme.cursor_color,
+                            self.theme.sidebar_bg,
+                            self.theme.statusbar_bg,
+                            self.theme.text_default,
+                            self.theme.tab_active_bg,
+                            self.theme.tab_inactive_bg,
+                        ];
+                        self.brush_cache.init_common_brushes(&target, &common_colors);
+                        let font_size = self.text_renderer.font_size();
+                        self.text_format_cache.init_common_formats(font_size);
+                    }
                 }
             }
         }
@@ -185,7 +226,9 @@ impl EditorState {
             let dir_brush = self.brush_cache.get_brush(target, &dir_color).unwrap();
 
             if let Some(tree) = &self.file_tree {
-                let mut current_y = y + 10.0;
+                // 虚拟滚动：通过 sidebar_scroll_y 偏移实现大项目侧边栏性能优化
+                // current_y 起始位置减去滚动偏移，使得节点位置相对于可视区域
+                let mut current_y = y + 10.0 - self.sidebar_scroll_y;
                 let sel_color = color_f(0.0, 0.47, 0.83, 1.0);
                 let sel_brush = self.brush_cache.get_brush(target, &sel_color).unwrap();
                 let hover_color = color_f(0.2, 0.2, 0.2, 1.0);
@@ -422,15 +465,26 @@ impl EditorState {
                     target.FillRectangle(&hl_rect, &hl_brush);
                 }
 
-                // 行号（DrawText）
-                let line_number = format!("{}", line_idx + 1);
-                let ln_wide: Vec<u16> = line_number.encode_utf16().chain(Some(0)).collect();
+                // 行号（DrawText）—— 使用预缓存的 UTF-16 编码，避免每帧 format! + encode_utf16
+                let ln_wide: &[u16] = if line_idx < self.cached_line_numbers.len() && !self.cached_line_numbers[line_idx].is_empty() {
+                    &self.cached_line_numbers[line_idx]
+                } else {
+                    &[]
+                };
+                // 如果缓存未命中，回退到动态生成
+                let fallback_ln: Vec<u16>;
+                let ln_wide_final: &[u16] = if ln_wide.is_empty() {
+                    fallback_ln = format!("{}", line_idx + 1).encode_utf16().chain(Some(0)).collect();
+                    &fallback_ln
+                } else {
+                    ln_wide
+                };
                 let ln_rect_draw = D2D_RECT_F {
                     left: x + 5.0, top: line_y,
                     right: x + line_number_width - 5.0, bottom: line_y + line_height,
                 };
                 target.DrawText(
-                    &ln_wide, &ln_format, &ln_rect_draw, &ln_fg_brush, D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    ln_wide_final, &ln_format, &ln_rect_draw, &ln_fg_brush, D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
 

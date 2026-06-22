@@ -455,6 +455,44 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 });
                 LRESULT(0)
             }
+            WM_NCCALCSIZE => {
+                // 移除系统非客户区边框，避免白色边框线
+                // 返回 0 表示客户区覆盖整个窗口，不绘制系统边框
+                LRESULT(0)
+            }
+            WM_NCHITTEST => {
+                // 自定义命中测试，实现无边框窗口的调整大小和拖动
+                let x = ((lparam.0 & 0xFFFF) as i16) as i32;
+                let y = (((lparam.0 >> 16) & 0xFFFF) as i16) as i32;
+                let mut rect = RECT::default();
+                if GetWindowRect(hwnd, &mut rect).is_ok() {
+                    let border_size = 8; // 边框调整大小区域
+                    let left = x - rect.left;
+                    let top = y - rect.top;
+                    let right = rect.right - x;
+                    let bottom = rect.bottom - y;
+
+                    let mut result = HTCLIENT;
+                    if top < border_size {
+                        if left < border_size { result = HTTOPLEFT; }
+                        else if right < border_size { result = HTTOPRIGHT; }
+                        else { result = HTTOP; }
+                    } else if bottom < border_size {
+                        if left < border_size { result = HTBOTTOMLEFT; }
+                        else if right < border_size { result = HTBOTTOMRIGHT; }
+                        else { result = HTBOTTOM; }
+                    } else if left < border_size {
+                        result = HTLEFT;
+                    } else if right < border_size {
+                        result = HTRIGHT;
+                    } else {
+                        // 标题栏区域全部返回 HTCLIENT，由 WM_LBUTTONDOWN 统一处理菜单/按钮点击和拖动
+                        // 不返回 HTCAPTION/HTCLOSE 等系统码，因为 WS_POPUP 窗口系统不会正确处理它们
+                    }
+                    return LRESULT(result as isize);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
             WM_ERASEBKGND => {
                 // 阻止系统擦除背景，避免白色闪烁
                 LRESULT(1)
@@ -925,10 +963,25 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             WM_MOUSEWHEEL => {
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as f32;
+                // 提取光标屏幕坐标
+                let cursor_x = (lparam.0 & 0xFFFF) as i16 as f32;
+                let cursor_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
-                        state.borrow_mut().scroll(-delta);
-                        state.borrow_mut().render();
+                        let mut state = state.borrow_mut();
+                        // 检查光标是否在侧边栏区域内
+                        let sidebar = state.layout.sidebar_region();
+                        if state.layout.sidebar_visible
+                            && cursor_x >= sidebar.x
+                            && cursor_x < sidebar.x + sidebar.width
+                            && cursor_y >= sidebar.y
+                            && cursor_y < sidebar.y + sidebar.height
+                        {
+                            state.scroll_sidebar(-delta);
+                        } else {
+                            state.scroll(-delta);
+                        }
+                        state.render();
                     }
                 });
                 LRESULT(0)
