@@ -63,7 +63,6 @@ pub enum SidebarContent {
     SettingsPanel,
     RemoteFileTree,
 }
-}
 
 impl SidebarContent {
     pub fn from_view(view: ActivityBarView) -> Self {

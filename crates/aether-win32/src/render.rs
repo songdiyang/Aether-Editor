@@ -271,7 +271,6 @@ impl EditorState {
                 crate::layout::SidebarContent::RemoteFileTree => {
                     self.render_remote_file_tree_sidebar(target, x, y, width, height, &text_brush);
                 }
-                }
             }
         }
     }
