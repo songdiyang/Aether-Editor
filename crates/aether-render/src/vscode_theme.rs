@@ -356,7 +356,7 @@ mod tests {
     fn test_parse_hex_color_rgb() {
         let c = parse_hex_color("#F53").unwrap();
         assert!((c.r - 1.0).abs() < 0.01);
-        assert!((c.g - 0.53).abs() < 0.01);
+        assert!((c.g - 0.33).abs() < 0.01);
         assert!((c.b - 0.2).abs() < 0.01);
     }
 
