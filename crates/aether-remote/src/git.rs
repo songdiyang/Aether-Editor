@@ -141,14 +141,19 @@ impl GitRepository {
 
     /// 获取当前分支名称
     pub fn current_branch(&self) -> Result<String> {
-        let head = self
-            .repo
-            .head()
-            .map_err(|e| GitError::StatusFailed(e.to_string()))?;
+        let head = self.repo.head();
 
-        let shorthand = head.shorthand().ok_or("HEAD 未指向任何分支")?;
-
-        Ok(shorthand.to_string())
+        match head {
+            Ok(head) => {
+                let shorthand = head.shorthand().ok_or("HEAD 未指向任何分支")?;
+                Ok(shorthand.to_string())
+            }
+            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => {
+                // 仓库刚初始化，没有提交，默认返回 master/main
+                Ok("master".to_string())
+            }
+            Err(e) => Err(GitError::StatusFailed(e.to_string()).into()),
+        }
     }
 
     /// 获取仓库状态
