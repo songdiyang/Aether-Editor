@@ -8,6 +8,9 @@ on:
 jobs:
   summarize-features:
     if: github.head_ref == 'dev'
+    permissions:
+      contents: read
+      pull-requests: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout dev branch
