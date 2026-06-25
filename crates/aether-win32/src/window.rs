@@ -79,6 +79,27 @@ thread_local! {
     static EDITOR_STATE: RefCell<Option<Rc<RefCell<EditorState>>>> = RefCell::new(None);
 }
 
+/// 设置当前活跃窗口的编辑器状态
+fn set_active_state(state: Rc<RefCell<EditorState>>) {
+    EDITOR_STATE.with(|s| {
+        *s.borrow_mut() = Some(state);
+    });
+}
+
+/// 从窗口的 GWLP_USERDATA 获取状态，并设为当前活跃状态
+unsafe fn get_window_state(hwnd: HWND) -> Option<Rc<RefCell<EditorState>>> {
+    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RefCell<EditorState>;
+    if ptr.is_null() {
+        return None;
+    }
+    let rc = Rc::from_raw(ptr);
+    let cloned = rc.clone();
+    let _ = Rc::into_raw(rc);
+    // 同时设为当前活跃状态
+    set_active_state(cloned.clone());
+    Some(cloned)
+}
+
 pub fn run() {
     unsafe {
         // 设置 DPI 感知模式（Per-Monitor V2）
@@ -92,61 +113,14 @@ pub fn run() {
             hInstance: instance.into(),
             lpszClassName: windows::core::PCWSTR(class_name.as_ptr()),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
-            hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(std::ptr::null_mut()), // NULL_BRUSH，避免系统绘制默认白色背景
+            hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(std::ptr::null_mut()),
             ..Default::default()
         };
 
         RegisterClassW(&wc);
 
-        // 获取主显示器 DPI 并计算缩放后的窗口大小
-        let (_dpi_scale, scaled_width, scaled_height) = get_dpi_scaled_size(1280, 800);
-
-        let title: Vec<u16> = WINDOW_TITLE.encode_utf16().chain(Some(0)).collect();
-        let hwnd = CreateWindowExW(
-            WS_EX_APPWINDOW,
-            windows::core::PCWSTR(class_name.as_ptr()),
-            windows::core::PCWSTR(title.as_ptr()),
-            WS_POPUP | WS_VISIBLE | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            scaled_width,
-            scaled_height,
-            None,
-            None,
-            instance,
-            None,
-        )
-        .unwrap();
-
-        // 启用 DWM Acrylic / Mica 效果
-        enable_dwm_acrylic(hwnd);
-
-        let state = EditorState::new(hwnd).unwrap();
-        let state_rc = Rc::new(RefCell::new(state));
-        EDITOR_STATE.with(|s| {
-            *s.borrow_mut() = Some(state_rc.clone());
-        });
-
-        // 获取窗口实际 DPI 并计算缩放因子
-        {
-            use windows::Win32::UI::HiDpi::GetDpiForWindow;
-            let dpi = GetDpiForWindow(hwnd);
-            let scale = dpi as f32 / 96.0;
-            state_rc.borrow_mut().dpi_scale = scale;
-        }
-
-        // 获取实际客户区物理像素尺寸，resize 内部会转换为逻辑像素
-        let mut client_rect = RECT::default();
-        if GetClientRect(hwnd, &mut client_rect).is_ok() {
-            let w = (client_rect.right - client_rect.left) as u32;
-            let h = (client_rect.bottom - client_rect.top) as u32;
-            if w > 0 && h > 0 {
-                state_rc.borrow_mut().resize(w, h);
-            }
-        }
-
-        state_rc.borrow_mut().init_render_target().unwrap();
-        state_rc.borrow_mut().render();
+        // 创建第一个窗口
+        create_editor_window(instance.into(), None);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
@@ -156,24 +130,112 @@ pub fn run() {
     }
 }
 
+/// 创建一个新的编辑器窗口
+/// 
+/// `instance`: 模块实例句柄
+/// `owner`: 可选的父窗口句柄
+unsafe fn create_editor_window(
+    instance: windows::Win32::Foundation::HINSTANCE,
+    owner: Option<HWND>,
+) -> HWND {
+    // 获取主显示器 DPI 并计算缩放后的窗口大小
+    let (_dpi_scale, scaled_width, scaled_height) = get_dpi_scaled_size(1280, 800);
+
+    let class_name: Vec<u16> = CLASS_NAME.encode_utf16().chain(Some(0)).collect();
+    let title: Vec<u16> = WINDOW_TITLE.encode_utf16().chain(Some(0)).collect();
+    
+    let ex_style = if owner.is_some() {
+        WS_EX_APPWINDOW | WS_EX_WINDOWEDGE
+    } else {
+        WS_EX_APPWINDOW
+    };
+    
+    let hwnd = CreateWindowExW(
+        ex_style,
+        windows::core::PCWSTR(class_name.as_ptr()),
+        windows::core::PCWSTR(title.as_ptr()),
+        WS_POPUP | WS_VISIBLE | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        scaled_width,
+        scaled_height,
+        owner.unwrap_or(HWND(std::ptr::null_mut())),
+        None,
+        instance,
+        None,
+    )
+    .unwrap();
+
+    // 启用 DWM Acrylic / Mica 效果
+    enable_dwm_acrylic(hwnd);
+
+    let state = EditorState::new(hwnd).unwrap();
+    let state_rc = Rc::new(RefCell::new(state));
+    
+    // 将状态存储到窗口的用户数据区，以便窗口过程可以访问
+    // 使用 GWL_USERDATA 来存储 Rc<RefCell<EditorState>> 的指针
+    let state_ptr = Rc::into_raw(state_rc) as *mut RefCell<EditorState> as isize;
+    let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr);
+
+    // 获取窗口实际 DPI 并计算缩放因子
+    {
+        use windows::Win32::UI::HiDpi::GetDpiForWindow;
+        let dpi = GetDpiForWindow(hwnd);
+        let scale = dpi as f32 / 96.0;
+        let state_ref = Rc::from_raw(state_ptr as *mut RefCell<EditorState>);
+        state_ref.borrow_mut().dpi_scale = scale;
+        // 重新获取所有权，避免释放
+        let _ = Rc::into_raw(state_ref);
+    }
+
+    // 获取实际客户区物理像素尺寸
+    let mut client_rect = RECT::default();
+    if GetClientRect(hwnd, &mut client_rect).is_ok() {
+        let w = (client_rect.right - client_rect.left) as u32;
+        let h = (client_rect.bottom - client_rect.top) as u32;
+        if w > 0 && h > 0 {
+            let state_ref = Rc::from_raw(state_ptr as *mut RefCell<EditorState>);
+            state_ref.borrow_mut().resize(w, h);
+            let _ = Rc::into_raw(state_ref);
+        }
+    }
+
+    // 初始化渲染目标并首次渲染
+    {
+        let state_ref = Rc::from_raw(state_ptr as *mut RefCell<EditorState>);
+        let _ = state_ref.borrow_mut().init_render_target();
+        state_ref.borrow_mut().render();
+        // 设为当前活跃状态
+        let state_ref = Rc::from_raw(state_ptr as *mut RefCell<EditorState>);
+        set_active_state(state_ref.clone());
+        let _ = Rc::into_raw(state_ref);
+    }
+
+    hwnd
+}
+
 extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
+        // 从窗口用户数据获取编辑器状态，并设为当前活跃状态
+        let get_state = || -> Option<Rc<RefCell<EditorState>>> {
+            get_window_state(hwnd)
+        };
+
         match msg {
             WM_LBUTTONDOWN => {
                 let raw_x = (lparam.0 & 0xFFFF) as i16 as f32;
                 let raw_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
-                EDITOR_STATE.with(|s| {
-                    if let Some(state) = s.borrow().as_ref() {
-                        let mut st = state.borrow_mut();
-                        // 默认取消终端焦点，只有点击底部面板时才聚焦
-                        st.terminal_panel.focused = false;
-                        // 将物理像素转换为逻辑像素(DIP)
-                        let mouse_x = raw_x / st.dpi_scale;
-                        let mouse_y = raw_y / st.dpi_scale;
-                        let layout = st.layout.clone();
+                if let Some(state) = get_state() {
+                    let mut st = state.borrow_mut();
+                    // 默认取消终端焦点，只有点击底部面板时才聚焦
+                    st.terminal_panel.focused = false;
+                    // 将物理像素转换为逻辑像素(DIP)
+                    let mouse_x = raw_x / st.dpi_scale;
+                    let mouse_y = raw_y / st.dpi_scale;
+                    let layout = st.layout.clone();
 
-                        // 对话框优先拦截点击
-                        if st.ssh_dialog.visible {
+                    // 对话框优先拦截点击
+                    if st.ssh_dialog.visible {
                             if let Some(action) = st.handle_ssh_dialog_click(mouse_x, mouse_y) {
                                 match action {
                                     crate::ssh::DialogAction::Connect => {
@@ -213,7 +275,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             }
                             drop(st);
                             state.borrow_mut().render();
-                            return;
+                            return LRESULT(0);
                         }
 
                         if st.clone_dialog.visible {
@@ -241,11 +303,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                                 }
                                                 drop(st);
                                                 state.borrow_mut().render();
-                                                return;
+                                                return LRESULT(0);
                                             }
                                             // 文件夹对话框取消
                                             state.borrow_mut().render();
-                                            return;
+                                            return LRESULT(0);
                                         }
                                     }
                                     crate::ssh::DialogAction::Cancel => {
@@ -256,7 +318,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             }
                             drop(st);
                             state.borrow_mut().render();
-                            return;
+                            return LRESULT(0);
                         }
 
                         // 0. 检测标题栏区域点击（包含菜单项和窗口控制按钮）
@@ -277,7 +339,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                     // 关闭窗口
                                     drop(st);
                                     let _ = DestroyWindow(hwnd);
-                                    return;
+                                    return LRESULT(0);
                                 } else if mouse_x >= maximize_x {
                                     // 最大化/还原
                                     let is_max = st.is_maximized;
@@ -287,25 +349,25 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                     } else {
                                         let _ = ShowWindow(hwnd, SW_MAXIMIZE);
                                     }
-                                    return;
+                                    return LRESULT(0);
                                 } else {
                                     // 最小化
                                     drop(st);
                                     let _ = ShowWindow(hwnd, SW_MINIMIZE);
-                                    return;
+                                    return LRESULT(0);
                                 }
                             } else if mouse_x >= right_panel_btn_x {
                                 // 切换右侧面板可见性
                                 st.layout.right_panel_visible = !st.layout.right_panel_visible;
                                 drop(st);
                                 state.borrow_mut().render();
-                                return;
+                                return LRESULT(0);
                             } else if mouse_x >= bottom_panel_btn_x {
                                 // 切换底部面板可见性
                                 st.layout.bottom_panel_visible = !st.layout.bottom_panel_visible;
                                 drop(st);
                                 state.borrow_mut().render();
-                                return;
+                                return LRESULT(0);
                             }
 
                             // 检测是否点击了菜单项
@@ -317,7 +379,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 }
                                 drop(st);
                                 state.borrow_mut().render();
-                                return;
+                                return LRESULT(0);
                             }
 
                             // 标题栏拖动开始（点击了标题栏但非按钮/菜单区域）
@@ -325,7 +387,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             drop(st);
                             let _ = ReleaseCapture();
                             let _ = SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
-                            return;
+                            return LRESULT(0);
                         }
 
                         // 1. 检测子菜单点击（子菜单在标题栏下方弹出）
@@ -341,7 +403,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                                 drop(st);
                                                 state.borrow_mut().execute_command(cmd, hwnd);
                                                 state.borrow_mut().render();
-                                                return;
+                                                return LRESULT(0);
                                             }
                                         }
                                     }
@@ -350,7 +412,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             st.menu_bar.close_all();
                             drop(st);
                             state.borrow_mut().render();
-                            return;
+                            return LRESULT(0);
                         }
 
                         // 2. 检测活动栏点击
@@ -363,7 +425,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 st.sidebar_content = crate::layout::SidebarContent::from_view(view);
                                 drop(st);
                                 state.borrow_mut().render();
-                                return;
+                                return LRESULT(0);
                             }
                         }
 
@@ -380,13 +442,13 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             st.layout.right_panel_resizing = true;
                             drop(st);
                             state.borrow_mut().render();
-                            return;
+                            return LRESULT(0);
                         }
                         if bottom_panel_resize_zone {
                             st.layout.bottom_panel_resizing = true;
                             drop(st);
                             state.borrow_mut().render();
-                            return;
+                            return LRESULT(0);
                         }
 
                         // 3. 检测侧边栏点击
@@ -429,14 +491,14 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                             }
                                             drop(st);
                                             state.borrow_mut().render();
-                                            return;
+                                            return LRESULT(0);
                                         }
                                     }
                                 }
                                 if handled {
                                     drop(st);
                                     state.borrow_mut().render();
-                                    return;
+                                    return LRESULT(0);
                                 }
                             } else if st.sidebar_content == crate::layout::SidebarContent::AiAssistantPanel {
                                 // AI 面板点击处理
@@ -470,7 +532,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                             drop(st);
                                             let _ = state.borrow_mut().ai_panel.send_quick_action(action_clone, &selected_code, &settings);
                                             state.borrow_mut().render();
-                                            return;
+                                            return LRESULT(0);
                                         }
                                     }
                                 }
@@ -488,7 +550,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                     }
                                     drop(st);
                                     state.borrow_mut().render();
-                                    return;
+                                    return LRESULT(0);
                                 }
 
                                 // 检测输入框点击
@@ -501,12 +563,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 if handled {
                                     drop(st);
                                     state.borrow_mut().render();
-                                    return;
+                                    return LRESULT(0);
                                 }
                             } else if st.handle_sidebar_click(sidebar_rel_x, sidebar_rel_y) {
                                 drop(st);
                                 state.borrow_mut().render();
-                                return;
+                                return LRESULT(0);
                             }
                         }
 
@@ -517,7 +579,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             if st.handle_tab_bar_click(mouse_x, mouse_y, tab_region.x) {
                                 drop(st);
                                 state.borrow_mut().render();
-                                return;
+                                return LRESULT(0);
                             }
                         }
 
@@ -546,7 +608,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 }
                                 drop(st);
                                 state.borrow_mut().render();
-                                return;
+                                return LRESULT(0);
                             }
                         }
 
@@ -556,7 +618,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             st.terminal_panel.focused = true;
                             drop(st);
                             state.borrow_mut().render();
-                            return;
+                            return LRESULT(0);
                         }
 
                         // 5. 欢迎页/编辑器区域点击
@@ -599,7 +661,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                             state.borrow_mut().render();
                                         }
                                     }
-                                    return;
+                                    return LRESULT(0);
                                 }
                             } else {
                                 let editor_content = layout.editor_content_region(has_multiple_tabs);
@@ -608,14 +670,13 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 st.start_selection();
                                 drop(st);
                                 state.borrow_mut().render();
-                                return;
+                                return LRESULT(0);
                             }
                         }
 
                         // 6. 状态栏点击
                         let _status_region = layout.status_bar_region();
                     }
-                });
                 LRESULT(0)
             }
             WM_MOUSEMOVE => {
@@ -623,13 +684,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 let raw_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
                 let is_dragging = wparam.0 & 0x0001 != 0; // MK_LBUTTON
 
-                EDITOR_STATE.with(|s| -> LRESULT {
-                    if let Some(state) = s.borrow().as_ref() {
-                        let mut st = state.borrow_mut();
-                        // 将物理像素转换为逻辑像素(DIP)
-                        let mouse_x = raw_x / st.dpi_scale;
-                        let mouse_y = raw_y / st.dpi_scale;
-                        let layout = st.layout.clone();
+                if let Some(state) = get_state() {
+                    let mut st = state.borrow_mut();
+                    // 将物理像素转换为逻辑像素(DIP)
+                    let mouse_x = raw_x / st.dpi_scale;
+                    let mouse_y = raw_y / st.dpi_scale;
+                    let layout = st.layout.clone();
 
                         // 对话框悬停处理
                         if st.ssh_dialog.visible {
@@ -860,8 +920,6 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             state.borrow_mut().render();
                         }
                     }
-                    LRESULT(0)
-                });
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
@@ -877,7 +935,19 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 LRESULT(0)
             }
             WM_DESTROY => {
+                // 释放窗口关联的编辑器状态
+                let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RefCell<EditorState>;
+                if !ptr.is_null() {
+                    let _ = Rc::from_raw(ptr);
+                    let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                }
                 PostQuitMessage(0);
+                LRESULT(0)
+            }
+            msg if msg == WM_APP + 2 => {
+                // 新建窗口请求
+                let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap();
+                create_editor_window(instance.into(), Some(hwnd));
                 LRESULT(0)
             }
             WM_SIZE => {
@@ -926,6 +996,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         let mut st = state.borrow_mut();
                         st.dpi_scale = new_scale;
                         st.render_ctx.set_dpi(new_dpi);
+                        st.text_renderer.set_dpi_scale(new_scale);
                         st.status_message =
                             format!("DPI: {} ({}%)", new_dpi as u32, (new_scale * 100.0) as u32);
                         drop(st);
